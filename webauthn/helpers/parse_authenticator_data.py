@@ -1,3 +1,6 @@
+from io import BytesIO
+import cbor2
+
 from .exceptions import InvalidAuthenticatorDataStructure
 from .structs import AttestedCredentialData, AuthenticatorData, AuthenticatorDataFlags
 
@@ -5,6 +8,8 @@ from .structs import AttestedCredentialData, AuthenticatorData, AuthenticatorDat
 def parse_authenticator_data(val: bytes) -> AuthenticatorData:
     """
     Turn `response.attestationObject.authData` into structured data
+
+    For how this is structured, refer to https://www.w3.org/TR/webauthn/#sctn-attestation
     """
     # Don't bother parsing if there aren't enough bytes for at least:
     # - rpIdHash (32 bytes)
@@ -53,8 +58,20 @@ def parse_authenticator_data(val: bytes) -> AuthenticatorData:
         credential_id = val[pointer : pointer + credential_id_len]
         pointer += credential_id_len
 
-        # The remainder of the bytes will be the credential public key
-        credential_public_key = val[pointer:]
+        # The next part is the public key (COSE).
+        # As there can be extensions behind that and there is no field that tells how long it is,
+        # we must decode and re-encode it via CBOR.
+        credential_public_key_and_extensions = val[pointer:]
+        credential_public_key = None
+        extensions = None
+        with BytesIO(credential_public_key_and_extensions) as fp:
+            decoder = cbor2.CBORDecoder(fp)
+            credential_public_key = cbor2.dumps(decoder.decode())
+            try:
+                # When bytes are left, those are the extensions
+                extensions = cbor2.dumps(decoder.decode())
+            except cbor2.CBORDecodeEOF:
+                pass
 
         attested_cred_data = AttestedCredentialData(
             aaguid=aaguid,
@@ -62,5 +79,6 @@ def parse_authenticator_data(val: bytes) -> AuthenticatorData:
             credential_public_key=credential_public_key,
         )
         authenticator_data.attested_credential_data = attested_cred_data
+        authenticator_data.extensions = extensions
 
     return authenticator_data
